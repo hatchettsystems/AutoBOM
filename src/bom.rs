@@ -349,7 +349,7 @@ pub fn totals(lines: &[Line], cat: Option<&str>) -> (f64, bool) {
 mod tests {
     use super::*;
 
-    fn part(name: &str) -> PartInstance { PartInstance { raw: name.into(), name: name.into(), path: vec!["Root".into(), name.into()] } }
+    fn part(name: &str) -> PartInstance { PartInstance { raw: name.into(), name: name.into(), path: vec!["Root".into(), name.into()], pd: 0 } }
     fn parts(v: &[(&str, usize)]) -> Vec<PartInstance> { v.iter().flat_map(|(n, c)| std::iter::repeat(part(n)).take(*c)).collect() }
 
     #[test]

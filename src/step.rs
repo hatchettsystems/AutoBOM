@@ -80,11 +80,10 @@ pub struct StepFile {
     pub skipped: usize,
 }
 
-/// Parses a STEP file's text.
-pub fn parse(text: &str) -> Result<StepFile, String> {
+/// Calls `f` with each cleaned `#id = ...` statement of the DATA section.
+pub(crate) fn statements(text: &str, mut f: impl FnMut(&str)) -> Result<(), String> {
     let bytes = text.as_bytes();
     let data = find_data_section(bytes).ok_or("This does not look like a STEP file (no DATA section found).")?;
-    let mut out = StepFile::default();
     let mut i = data;
     let n = bytes.len();
     while i < n {
@@ -116,9 +115,15 @@ pub fn parse(text: &str) -> Result<StepFile, String> {
         if s.is_empty() { continue; }
         if s.starts_with("ENDSEC") { break; }
         if !s.starts_with('#') { continue; }
-        out.statements += 1;
-        handle_statement(s, &mut out);
+        f(s);
     }
+    Ok(())
+}
+
+/// Parses a STEP file's text.
+pub fn parse(text: &str) -> Result<StepFile, String> {
+    let mut out = StepFile::default();
+    statements(text, |s| { out.statements += 1; handle_statement(s, &mut out); })?;
     Ok(out)
 }
 
@@ -201,17 +206,17 @@ fn handle_statement(s: &str, out: &mut StepFile) {
     out.entities.insert(id, Entity { name: name.to_string(), args });
 }
 
-struct Parser<'a> {
+pub(crate) struct Parser<'a> {
     b: &'a [u8],
     s: &'a str,
     i: usize,
 }
 
 impl<'a> Parser<'a> {
-    fn new(s: &'a str) -> Self { Parser { b: s.as_bytes(), s, i: 0 } }
-    fn eof(&self) -> bool { self.i >= self.b.len() }
-    fn peek(&self) -> Option<u8> { self.b.get(self.i).copied() }
-    fn skip_ws(&mut self) {
+    pub(crate) fn new(s: &'a str) -> Self { Parser { b: s.as_bytes(), s, i: 0 } }
+    pub(crate) fn eof(&self) -> bool { self.i >= self.b.len() }
+    pub(crate) fn peek(&self) -> Option<u8> { self.b.get(self.i).copied() }
+    pub(crate) fn skip_ws(&mut self) {
         while let Some(c) = self.peek() {
             if c.is_ascii_whitespace() { self.i += 1; }
             else if c == b'/' && self.b.get(self.i + 1) == Some(&b'*') {
@@ -221,7 +226,7 @@ impl<'a> Parser<'a> {
             } else { break; }
         }
     }
-    fn word(&mut self) -> String {
+    pub(crate) fn word(&mut self) -> String {
         let st = self.i;
         while let Some(c) = self.peek() {
             if c.is_ascii_alphanumeric() || c == b'_' { self.i += 1; } else { break; }
@@ -229,7 +234,7 @@ impl<'a> Parser<'a> {
         self.s[st..self.i].to_string()
     }
     /// "( a, b, c )"
-    fn args(&mut self) -> Vec<Arg> {
+    pub(crate) fn args(&mut self) -> Vec<Arg> {
         self.skip_ws();
         if self.peek() != Some(b'(') { return Vec::new(); }
         self.i += 1;
@@ -354,6 +359,8 @@ pub struct Product {
     pub description: String,
     /// Solid bodies this product owns directly.
     pub solids: usize,
+    /// The ids of those solid bodies.
+    pub solid_ids: Vec<u32>,
     /// The products placed inside it (one entry per placement, repeats included).
     pub children: Vec<u32>,
 }
@@ -423,10 +430,10 @@ pub fn build_model(f: &StepFile) -> Model {
             }
         }
     }
-    let direct_solids = |rep: u32| -> usize {
+    let direct_solids = |rep: u32| -> Vec<u32> {
         match get(rep) {
-            Some(r) => r.args.get(1).map(|a| a.as_list().iter().filter(|x| x.as_ref().map(|i| f.solids.contains(&i)).unwrap_or(false)).count()).unwrap_or(0),
-            None => 0,
+            Some(r) => r.args.get(1).map(|a| a.as_list().iter().filter_map(|x| x.as_ref()).filter(|i| f.solids.contains(i)).collect()).unwrap_or_default(),
+            None => Vec::new(),
         }
     };
     let mut seen_reps: HashMap<u32, HashSet<u32>> = HashMap::new();
@@ -441,7 +448,7 @@ pub fn build_model(f: &StepFile) -> Model {
         let mut stack = vec![rep];
         while let Some(r) = stack.pop() {
             if !seen.insert(r) { continue; }
-            if let Some(p) = m.products.get_mut(&pd) { p.solids += direct_solids(r); }
+            if let Some(p) = m.products.get_mut(&pd) { let d = direct_solids(r); p.solids += d.len(); p.solid_ids.extend(d); }
             if let Some(ls) = links.get(&r) { for l in ls { stack.push(*l); } }
         }
     }
@@ -460,6 +467,8 @@ pub struct PartInstance {
     pub name: String,
     /// Names from the top of the assembly down to (and including) the product.
     pub path: Vec<String>,
+    /// The product definition this part belongs to (its geometry is looked up by it).
+    pub pd: u32,
 }
 
 pub fn is_solid_name(n: &str) -> bool {
@@ -508,7 +517,7 @@ fn walk(m: &Model, pd: u32, path: &mut Vec<u32>, names: &mut Vec<String>, out: &
         let ancestors = &names[..names.len() - 1];
         let name = resolve_part_name(&p.name, ancestors);
         for _ in 0..own {
-            out.parts.push(PartInstance { raw: p.name.clone(), name: name.clone(), path: names.clone() });
+            out.parts.push(PartInstance { raw: p.name.clone(), name: name.clone(), path: names.clone(), pd });
         }
     } else if p.children.is_empty() {
         out.empty_components += 1;

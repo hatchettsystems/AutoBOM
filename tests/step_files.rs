@@ -89,3 +89,19 @@ fn garbage_is_refused_politely() {
     assert!(read_step_file(&dir.join("missing.step")).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn real_geometry_is_measured() {
+    let (model, ex) = read_step_file(&fixture("gantry.step")).unwrap();
+    let geo = autobom::geom::Geo::load(&fixture("gantry.step")).unwrap();
+    let mut n = 0;
+    for p in &ex.parts {
+        let ids = &model.products[&p.pd].solid_ids;
+        let w = geo.wire(ids);
+        assert!(!w.is_empty(), "{} has an outline", p.name);
+        let s = w.size();
+        assert!(s.iter().all(|v| v.is_finite()) && s.iter().any(|v| *v > 0.1), "{} {:?}", p.name, s);
+        if p.name == "Base plate" { println!("Base plate {:?} mm", s); n += 1; }
+    }
+    assert_eq!(n, 1);
+}

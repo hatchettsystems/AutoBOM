@@ -30,3 +30,8 @@ named `SOLID` take their component's name. `(Mirror)` and `<2>` copies count wit
 
 ## Limits
 No 3D view, so you cannot click a part, and mirrors are detected by name only. Components with no geometry are left out.
+
+## Viewport
+The right-hand panel draws the selected part as an outline (edges, circles, splines) that you can orbit (drag), pan
+(right-drag) and zoom (scroll). X, Y and Z tape measures in millimetres sit beside it, with round tick marks and the
+overall size. Inch files are converted to mm. It shows outlines, not shaded surfaces, and parts stored only as meshes show no outline.

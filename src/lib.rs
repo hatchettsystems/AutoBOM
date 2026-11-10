@@ -3,4 +3,5 @@ pub mod bom;
 pub mod money;
 pub mod project;
 pub mod step;
+pub mod geom;
 pub mod session;

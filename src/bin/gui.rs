@@ -2,11 +2,13 @@
 
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
-use autobom::bom::{category_label, sort_lines, Action, Line, Prefs, CATEGORIES};
+use autobom::bom::{category_label, sort_lines, tidy, Action, Line, Prefs, CATEGORIES};
 use autobom::money::{cost_symbol, fmt_money, natural_cmp, norm_cost};
 use autobom::project::{from_csv, to_csv, to_json, Project};
 use autobom::session::Session;
+use autobom::geom::{Geo, Wire, V3};
 use autobom::step::{read_step_file, PartInstance};
+use std::collections::HashMap;
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
@@ -81,7 +83,7 @@ fn primary(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
 #[derive(PartialEq, Clone, Copy)]
 enum Tab { Review, Bom, Parts }
 
-struct Loaded { path: PathBuf, parts: Vec<PartInstance>, summary: String }
+struct Loaded { path: PathBuf, parts: Vec<PartInstance>, summary: String, solids: HashMap<u32, Vec<u32>>, geo: Option<Geo> }
 
 struct App {
     project: Project,
@@ -94,14 +96,25 @@ struct App {
     loading: Option<Receiver<Result<Loaded, String>>>,
     project_path: Option<PathBuf>,
     startup_file: Option<PathBuf>,
+    geo: Option<Geo>,
+    pd_solids: HashMap<u32, Vec<u32>>,
+    name_pds: HashMap<String, Vec<u32>>,
+    wires: HashMap<String, Option<Wire>>,
+    view_name: Option<String>,
+    cam: Cam,
 }
+
+#[derive(Clone, Copy)]
+struct Cam { yaw: f32, pitch: f32, zoom: f32, pan: egui::Vec2 }
+impl Default for Cam { fn default() -> Cam { Cam { yaw: -0.6, pitch: 0.5, zoom: 1.0, pan: egui::Vec2::ZERO } } }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> App {
         apply_theme(&cc.egui_ctx);
         App { project: Project::default(), parts: Vec::new(), session: None, tab: Tab::Review, list: "all".into(),
             status: "Open a STEP file to begin.".into(), error: None, loading: None, project_path: None,
-            startup_file: std::env::args_os().nth(1).map(PathBuf::from) }
+            startup_file: std::env::args_os().nth(1).map(PathBuf::from),
+            geo: None, pd_solids: HashMap::new(), name_pds: HashMap::new(), wires: HashMap::new(), view_name: None, cam: Cam::default() }
     }
 
     fn open_step(&mut self, ctx: &egui::Context, path: PathBuf) {
@@ -113,7 +126,9 @@ impl App {
             let r = read_step_file(&path).map(|(model, ex)| {
                 let summary = format!("Read {} products, {} placed parts{}.", model.products.len(), ex.parts.len(),
                     if ex.empty_components > 0 { format!(" ({} empty components left out)", ex.empty_components) } else { String::new() });
-                Loaded { path: path.clone(), parts: ex.parts, summary }
+                let solids = model.products.iter().map(|(k, p)| (*k, p.solid_ids.clone())).collect();
+                let geo = Geo::load(&path).ok();
+                Loaded { path: path.clone(), parts: ex.parts, summary, solids, geo }
             });
             let _ = tx.send(r);
             ctx.request_repaint();
@@ -128,6 +143,15 @@ impl App {
                 Ok(l) => {
                     self.project.step_path = l.path.display().to_string();
                     self.parts = l.parts;
+                    self.geo = l.geo;
+                    self.pd_solids = l.solids;
+                    self.wires.clear();
+                    self.view_name = None;
+                    self.name_pds.clear();
+                    for p in &self.parts {
+                        let v = self.name_pds.entry(tidy(&p.name).to_lowercase()).or_default();
+                        if !v.contains(&p.pd) { v.push(p.pd); }
+                    }
                     let s = Session::start(self.project.clone(), &self.parts);
                     self.status = format!("{} {}", l.summary, s.summary());
                     self.session = Some(s);
@@ -443,6 +467,79 @@ impl App {
 
     fn lines_mut_ref(&mut self) -> &mut Vec<Line> { self.lines_mut() }
 
+
+    /// The wireframe for a part name (cached). None when the file has no geometry we can draw.
+    fn wire_for(&mut self, key: &str) -> Option<Wire> {
+        if !self.wires.contains_key(key) {
+            let w = match (&self.geo, self.name_pds.get(key)) {
+                (Some(g), Some(pds)) => {
+                    let parts: Vec<Wire> = pds.iter().filter_map(|pd| self.pd_solids.get(pd)).map(|ids| g.wire(ids)).collect();
+                    let w = Wire::merge(parts);
+                    if w.is_empty() { None } else { Some(w) }
+                }
+                _ => None,
+            };
+            self.wires.insert(key.to_string(), w);
+        }
+        self.wires[key].clone()
+    }
+
+    /// The right-hand viewport: the selected part drawn as an outline with X / Y / Z tape measures in millimetres.
+    fn viewport_panel(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::right("viewport").default_width(480.0).min_width(260.0).frame(egui::Frame::new().fill(BG1).stroke(egui::Stroke::new(1.0, LINE))).show(ctx, |ui| {
+            panel_header(ui, "Viewport");
+            // in Review the part shown is one of the components counted in the current entry
+            if self.tab == Tab::Review {
+                if let Some(s) = &self.session {
+                    if let Some(g) = s.queue.get(s.i).filter(|_| !s.finished) {
+                        let names: Vec<String> = g.members.iter().enumerate().filter(|(m, _)| g.sel[*m] && !(g.ask.contains(m) && g.answer.is_none())).map(|(_, m)| m.name.clone()).collect();
+                        let keys: Vec<String> = names.iter().map(|n| tidy(n).to_lowercase()).collect();
+                        if !keys.iter().any(|k| Some(k) == self.view_name.as_ref()) { self.view_name = keys.first().cloned(); }
+                        if names.len() > 1 {
+                            ui.horizontal(|ui| {
+                                ui.label("Showing");
+                                let cur = names.iter().zip(&keys).find(|(_, k)| Some(*k) == self.view_name.as_ref()).map(|(n, _)| n.clone()).unwrap_or_default();
+                                egui::ComboBox::from_id_salt("vpart").selected_text(cur).show_ui(ui, |ui| {
+                                    for (n, k) in names.iter().zip(&keys) { ui.selectable_value(&mut self.view_name, Some(k.clone()), n); }
+                                });
+                            });
+                        }
+                    } else { self.view_name = None; }
+                }
+            }
+            let Some(key) = self.view_name.clone() else { ui.add_space(8.0); ui.label("  Select a part to see it here."); return; };
+            let title = self.name_pds.get(&key).and_then(|pds| self.parts.iter().find(|p| Some(&p.pd) == pds.first())).map(|p| p.name.clone()).unwrap_or(key.clone());
+            let wire = self.wire_for(&key);
+            ui.label(egui::RichText::new(title).strong().color(egui::Color32::WHITE));
+            match wire {
+                None => { ui.label(if self.geo.is_none() { "This file's geometry could not be read." } else { "No drawable outline for this part (the file may hold it as a mesh)." }); }
+                Some(w) => {
+                    let z = w.size();
+                    ui.horizontal(|ui| {
+                        ui.colored_label(AXIS_X, format!("X {} mm", fmt_mm(z[0])));
+                        ui.colored_label(AXIS_Y, format!("Y {} mm", fmt_mm(z[1])));
+                        ui.colored_label(AXIS_Z, format!("Z {} mm", fmt_mm(z[2])));
+                    });
+                    let h = (ui.available_height() - 22.0).max(200.0);
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click_and_drag());
+                    if resp.dragged_by(egui::PointerButton::Primary) {
+                        let d = resp.drag_delta();
+                        self.cam.yaw += d.x * 0.01;
+                        self.cam.pitch = (self.cam.pitch + d.y * 0.01).clamp(-1.5, 1.5);
+                    }
+                    if resp.dragged_by(egui::PointerButton::Secondary) || resp.dragged_by(egui::PointerButton::Middle) { self.cam.pan += resp.drag_delta(); }
+                    if resp.hovered() {
+                        let sc = ui.input(|i| i.smooth_scroll_delta.y);
+                        if sc != 0.0 { self.cam.zoom = (self.cam.zoom * (1.0 + sc * 0.002)).clamp(0.2, 20.0); }
+                    }
+                    if resp.double_clicked() { self.cam = Cam::default(); }
+                    draw_viewport(&ui.painter_at(rect), rect, &w, &self.cam);
+                    ui.label(egui::RichText::new("Drag: orbit   Right-drag: pan   Scroll: zoom   Double-click: reset").size(10.0).color(egui::Color32::GRAY));
+                }
+            }
+        });
+    }
+
     /// The left panel: every proposed entry in a list, like the Layers panel. Click one to jump to it.
     fn queue_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("queue").default_width(230.0).frame(egui::Frame::new().fill(BG1).stroke(egui::Stroke::new(1.0, LINE))).show(ctx, |ui| {
@@ -476,13 +573,19 @@ impl App {
         if self.parts.is_empty() { ui.label("No STEP file open."); return; }
         let mut names: std::collections::BTreeMap<String, usize> = Default::default();
         for p in &self.parts { *names.entry(p.name.clone()).or_default() += 1; }
-        ui.label(format!("{} placed parts, {} different names.", self.parts.len(), names.len()));
+        ui.label(format!("{} placed parts, {} different names. Click one to see it in the viewport.", self.parts.len(), names.len()));
         let mut v: Vec<_> = names.into_iter().collect();
         v.sort_by(|a, b| natural_cmp(&a.0, &b.0));
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("parts").striped(true).num_columns(2).show(ui, |ui| {
                 ui.strong("Qty"); ui.strong("Part"); ui.end_row();
-                for (n, c) in v { ui.label(c.to_string()); ui.label(n); ui.end_row(); }
+                for (n, c) in v {
+                    ui.label(c.to_string());
+                    let key = tidy(&n).to_lowercase();
+                    let on = self.view_name.as_deref() == Some(key.as_str());
+                    if ui.selectable_label(on, n).clicked() { self.view_name = Some(key); }
+                    ui.end_row();
+                }
             });
         });
     }
@@ -499,6 +602,7 @@ impl eframe::App for App {
             });
         });
         if self.tab == Tab::Review { self.queue_panel(ctx); }
+        if self.tab != Tab::Bom { self.viewport_panel(ctx); }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG1).inner_margin(egui::Margin::same(10))).show(ctx, |ui| match self.tab {
             Tab::Review => self.review(ui),
             Tab::Bom => self.bom(ui),
@@ -518,9 +622,108 @@ impl eframe::App for App {
     }
 }
 
+
+const AXIS_X: egui::Color32 = egui::Color32::from_rgb(0xe8, 0x4d, 0x4d);
+const AXIS_Y: egui::Color32 = egui::Color32::from_rgb(0x5c, 0xc8, 0x5c);
+const AXIS_Z: egui::Color32 = egui::Color32::from_rgb(0x4d, 0x9b, 0xf0);
+
+fn fmt_mm(v: f64) -> String { if v >= 100.0 { format!("{v:.1}") } else if v >= 1.0 { format!("{v:.2}") } else { format!("{v:.3}") } }
+
+/// A round step size (1, 2, 5 x 10^n) that gives about `n` divisions of `len`.
+fn nice_step(len: f64, n: f64) -> f64 {
+    let raw = (len / n).max(1e-9);
+    let mag = 10f64.powf(raw.log10().floor());
+    let f = raw / mag;
+    mag * if f < 1.5 { 1.0 } else if f < 3.5 { 2.0 } else if f < 7.5 { 5.0 } else { 10.0 }
+}
+
+fn draw_viewport(p: &egui::Painter, rect: egui::Rect, w: &Wire, cam: &Cam) {
+    p.rect_filled(rect, 0, BG0);
+    // faint floor grid under the part's footprint, for scale
+    let c = w.center();
+    let sz = w.size();
+    let big = sz[0].max(sz[1]).max(sz[2]).max(1e-6);
+    let (sy, cy) = cam.yaw.sin_cos();
+    let (sp, cp) = cam.pitch.sin_cos();
+    let scale = (rect.width().min(rect.height()) as f64 * 0.40 * cam.zoom as f64) / (big * 0.9);
+    let ctr = rect.center() + cam.pan;
+    // returns (screen point, depth)
+    let proj = |q: V3| -> (egui::Pos2, f32) {
+        let (x, y, z) = ((q[0] - c[0]) as f32, (q[1] - c[1]) as f32, (q[2] - c[2]) as f32);
+        let x1 = cy * x - sy * y;
+        let y1 = sy * x + cy * y;
+        let up = z * cp + y1 * sp;
+        let depth = y1 * cp - z * sp;
+        (egui::pos2(ctr.x + x1 * scale as f32, ctr.y - up * scale as f32), depth)
+    };
+    let (mn, mx) = (w.min, w.max);
+    // the part
+    let line = egui::Stroke::new(1.2, egui::Color32::from_rgb(0xb4, 0xcc, 0xe6));
+    for l in &w.lines {
+        let pts: Vec<egui::Pos2> = l.iter().map(|q| proj(*q).0).collect();
+        p.add(egui::Shape::line(pts, line));
+    }
+    // bounding box
+    let bx = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40));
+    let corner = |i: usize| [if i & 1 == 0 { mn[0] } else { mx[0] }, if i & 2 == 0 { mn[1] } else { mx[1] }, if i & 4 == 0 { mn[2] } else { mx[2] }];
+    for i in 0..8usize { for b in [1usize, 2, 4] { if i & b == 0 { p.line_segment([proj(corner(i)).0, proj(corner(i | b)).0], bx); } } }
+
+    // tape measures sit in front of the part: pick the sides that face the camera
+    let off = big * 0.10;
+    let front = |a: f64, b: f64, pa: V3, pb: V3| if proj(pa).1 <= proj(pb).1 { a } else { b };
+    let yv = front(mn[1] - off, mx[1] + off, [c[0], mn[1] - off, mn[2]], [c[0], mx[1] + off, mn[2]]);
+    let xv = front(mn[0] - off, mx[0] + off, [mn[0] - off, c[1], mn[2]], [mx[0] + off, c[1], mn[2]]);
+    let zf = mn[2];
+    let xo = if xv < c[0] { mx[0] } else { mn[0] };
+    tape(p, &proj, proj(c).0, [mn[0], yv, zf], [mx[0], yv, zf], 0, AXIS_X, "X");
+    tape(p, &proj, proj(c).0, [xv, mn[1], zf], [xv, mx[1], zf], 1, AXIS_Y, "Y");
+    tape(p, &proj, proj(c).0, [xo, yv, mn[2]], [xo, yv, mx[2]], 2, AXIS_Z, "Z");
+    // orientation gizmo
+    let o = rect.left_bottom() + egui::vec2(34.0, -34.0);
+    for (k, col, name) in [(0usize, AXIS_X, "X"), (1, AXIS_Y, "Y"), (2, AXIS_Z, "Z")] {
+        let mut d = [0.0; 3]; d[k] = 1.0;
+        let a = proj(c).0;
+        let b = proj([c[0] + d[0] * big, c[1] + d[1] * big, c[2] + d[2] * big]).0;
+        let v = (b - a).normalized() * 22.0;
+        p.line_segment([o, o + v], egui::Stroke::new(2.0, col));
+        p.text(o + v * 1.35, egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(10.0), col);
+    }
+}
+
+/// One tape measure: a ruler line from `a` to `b` in model space with ticks every round step and a label at the far end.
+fn tape(p: &egui::Painter, proj: &dyn Fn(V3) -> (egui::Pos2, f32), away: egui::Pos2, a: V3, b: V3, axis: usize, col: egui::Color32, name: &str) {
+    let len = (b[axis] - a[axis]).abs();
+    if len <= 0.0 { return; }
+    let (pa, pb) = (proj(a).0, proj(b).0);
+    p.line_segment([pa, pb], egui::Stroke::new(2.0, col));
+    let dir = pb - pa;
+    let mut tick_dir = if dir.length() > 0.1 { egui::vec2(-dir.y, dir.x).normalized() } else { egui::vec2(0.0, 1.0) };
+    if tick_dir.dot((pa + pb.to_vec2()).to_vec2() * 0.5 - away.to_vec2()) < 0.0 { tick_dir = -tick_dir; }
+    let step = nice_step(len, 6.0);
+    let at = |t: f64| { let mut q = a; q[axis] = a[axis] + t * (b[axis] - a[axis]).signum(); q };
+    let mut t = 0.0;
+    let mut n = 0;
+    while t <= len + 1e-9 && n < 200 {
+        let s = proj(at(t)).0;
+        p.line_segment([s - tick_dir * 4.0, s + tick_dir * 4.0], egui::Stroke::new(1.5, col));
+        if n % 1 == 0 && t > 0.0 && (len - t) > step * 0.4 {
+            p.text(s + tick_dir * 12.0, egui::Align2::CENTER_CENTER, if step >= 1.0 { format!("{t:.0}") } else { format!("{t:.1}") }, egui::FontId::proportional(9.0), col);
+        }
+        t += step; n += 1;
+    }
+    // end cap and total
+    p.line_segment([pb - tick_dir * 7.0, pb + tick_dir * 7.0], egui::Stroke::new(2.0, col));
+    let tag = format!("{name} {} mm", fmt_mm(len));
+    let pos = pa + dir * 0.5 + tick_dir * 30.0;
+    let galley = p.layout_no_wrap(tag, egui::FontId::proportional(11.0), egui::Color32::WHITE);
+    let r = egui::Rect::from_center_size(pos, galley.size() + egui::vec2(8.0, 4.0));
+    p.rect_filled(r, 2, col.gamma_multiply(0.85));
+    p.galley(r.center() - galley.size() / 2.0, galley, egui::Color32::WHITE);
+}
+
 fn main() -> eframe::Result {
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([980.0, 680.0]).with_title("Auto BOM").with_drag_and_drop(true),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1360.0, 800.0]).with_title("Auto BOM").with_drag_and_drop(true),
         ..Default::default()
     };
     eframe::run_native("Auto BOM", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))

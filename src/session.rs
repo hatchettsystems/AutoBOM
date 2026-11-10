@@ -203,7 +203,7 @@ mod tests {
     use super::*;
     use crate::step::PartInstance;
 
-    fn part(name: &str) -> PartInstance { PartInstance { raw: name.into(), name: name.into(), path: vec!["Root".into(), name.into()] } }
+    fn part(name: &str) -> PartInstance { PartInstance { raw: name.into(), name: name.into(), path: vec!["Root".into(), name.into()], pd: 0 } }
     fn parts(v: &[(&str, usize)]) -> Vec<PartInstance> { v.iter().flat_map(|(n, c)| std::iter::repeat(part(n)).take(*c)).collect() }
 
     #[test]
