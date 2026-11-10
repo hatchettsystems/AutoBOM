@@ -1,0 +1,32 @@
+[package]
+name = "autobom"
+version = "0.1.0"
+edition = "2021"
+description = "Import a STEP file, work out the parts, and build a bill of materials."
+license = "UNLICENSED"
+default-run = "autobom"
+
+[lib]
+name = "autobom"
+path = "src/lib.rs"
+
+[[bin]]
+name = "autobom"
+path = "src/bin/gui.rs"
+
+[[bin]]
+name = "autobom-cli"
+path = "src/bin/cli.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

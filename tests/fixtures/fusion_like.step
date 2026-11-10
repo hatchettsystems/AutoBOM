@@ -1,0 +1,71 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('Fusion style test file'),'2;1');
+FILE_NAME('fusion_like.step','2026-01-01T00:00:00',(''),(''),'','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
+ENDSEC;
+DATA;
+/* root assembly */
+#1 = PRODUCT('Gantry:1','Gantry:1','',(#2));
+#2 = PRODUCT_CONTEXT('',#3,'mechanical');
+#3 = APPLICATION_CONTEXT('automotive design');
+#4 = PRODUCT_DEFINITION_FORMATION('','',#1);
+#5 = PRODUCT_DEFINITION('design','',#4,#6);
+#6 = PRODUCT_DEFINITION_CONTEXT('part definition',#3,'design');
+/* a component that owns two bodies, both called SOLID */
+#10 = PRODUCT('Bracket:1','Bracket:1','',(#2));
+#11 = PRODUCT_DEFINITION_FORMATION('','',#10);
+#12 = PRODUCT_DEFINITION('design','',#11,#6);
+#13 = PRODUCT_DEFINITION_SHAPE('','',#12);
+#14 = SHAPE_DEFINITION_REPRESENTATION(#13,#15);
+#15 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#16,#17),#99);
+#16 = MANIFOLD_SOLID_BREP('SOLID',#900);
+#17 = MANIFOLD_SOLID_BREP('SOLID',#901);
+/* two separate products for two screws, one of them mirrored */
+#20 = PRODUCT('Screw:1','Screw:1','',(#2));
+#21 = PRODUCT_DEFINITION_FORMATION('','',#20);
+#22 = PRODUCT_DEFINITION('design','',#21,#6);
+#23 = PRODUCT_DEFINITION_SHAPE('','',#22);
+#24 = SHAPE_DEFINITION_REPRESENTATION(#23,#25);
+#25 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#26),#99);
+#26 = MANIFOLD_SOLID_BREP('SOLID',#902);
+#30 = PRODUCT('Screw:2','Screw:2','',(#2));
+#31 = PRODUCT_DEFINITION_FORMATION('','',#30);
+#32 = PRODUCT_DEFINITION('design','',#31,#6);
+#33 = PRODUCT_DEFINITION_SHAPE('','',#32);
+#34 = SHAPE_DEFINITION_REPRESENTATION(#33,#35);
+#35 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#36),#99);
+#36 = MANIFOLD_SOLID_BREP('SOLID',#903);
+#40 = PRODUCT('Screw(Mirror):1','Screw(Mirror):1','',(#2));
+#41 = PRODUCT_DEFINITION_FORMATION('','',#40);
+#42 = PRODUCT_DEFINITION('design','',#41,#6);
+#43 = PRODUCT_DEFINITION_SHAPE('','',#42);
+#44 = SHAPE_DEFINITION_REPRESENTATION(#43,#45);
+#45 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#46),#99);
+#46 = MANIFOLD_SOLID_BREP('SOLID',#904);
+/* a plate whose geometry sits in a linked representation (the older AP203 way) */
+#50 = PRODUCT('Gro\X2\00DF\X0\e Platte','Gro\X2\00DF\X0\e Platte','',(#2));
+#51 = PRODUCT_DEFINITION_FORMATION('','',#50);
+#52 = PRODUCT_DEFINITION('design','',#51,#6);
+#53 = PRODUCT_DEFINITION_SHAPE('','',#52);
+#54 = SHAPE_DEFINITION_REPRESENTATION(#53,#55);
+#55 = SHAPE_REPRESENTATION('',(#98),#99);
+#56 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#57),#99);
+#57 = MANIFOLD_SOLID_BREP('SOLID',#905);
+#58 = SHAPE_REPRESENTATION_RELATIONSHIP('','',#55,#56);
+/* a component with nothing in it */
+#60 = PRODUCT('Empty','Empty','',(#2));
+#61 = PRODUCT_DEFINITION_FORMATION('','',#60);
+#62 = PRODUCT_DEFINITION('design','',#61,#6);
+/* placements: the Bracket twice, each screw once, the plate once, the empty component once */
+#70 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#5,#12,$);
+#71 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('2','','',#5,#12,$);
+#72 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('3','','',#5,#22,$);
+#73 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('4','','',#5,#32,$);
+#74 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('5','','',#5,#42,$);
+#75 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('6','','',#5,#52,$);
+#76 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('7','','',#5,#62,$);
+#80 = (REPRESENTATION_RELATIONSHIP('','',#15,#55)REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#81)SHAPE_REPRESENTATION_RELATIONSHIP());
+#98 = AXIS2_PLACEMENT_3D('',#97,$,$);
+ENDSEC;
+END-ISO-10303-21;
